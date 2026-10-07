@@ -7,43 +7,44 @@
 
 #include "heapforge.h"
 #include "allocator.h"
+#include "block.h"
+#include "freelist.h"
 
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
 
-/* Global internal allocator state for Milestone 1 bump allocator */
+/* Global internal allocator state */
 static struct {
     bool initialized;
     void *initial_break;
     void *current_break;
     size_t total_sbrk_bytes;
     size_t alloc_count;
+    size_t free_count;
 } g_allocator = {
     .initialized = false,
     .initial_break = NULL,
     .current_break = NULL,
     .total_sbrk_bytes = 0,
-    .alloc_count = 0
+    .alloc_count = 0,
+    .free_count = 0
 };
 
 /**
- * @brief Ensures the initial program break is aligned to 16 bytes.
- *
- * @return true on success, false if sbrk failed.
+ * @brief Ensures the initial program break is aligned to 16 bytes and free list is initialized.
  */
 static bool init_allocator_if_needed(void) {
     if (g_allocator.initialized) {
         return true;
     }
 
-    /* Query current program break */
     void *cur = sbrk(0);
     if (cur == (void *)-1) {
         return false;
     }
 
-    /* If current break is not 16-byte aligned, pad to alignment boundary */
     uintptr_t addr = (uintptr_t)cur;
     uintptr_t misaligned = addr & (HEAPFORGE_ALIGNMENT - 1UL);
     if (misaligned != 0) {
@@ -57,66 +58,94 @@ static bool init_allocator_if_needed(void) {
     g_allocator.initial_break = sbrk(0);
     g_allocator.current_break = g_allocator.initial_break;
     g_allocator.initialized = true;
+
+    freelist_init();
     return true;
 }
 
 void *heapforge_malloc(size_t size) {
-    /* Policy: malloc(0) returns NULL */
     if (size == 0) {
         return NULL;
     }
 
-    /* Guard against integer overflow during alignment */
-    if (size > HEAPFORGE_MAX_ALLOC_SIZE) {
+    if (size > HEAPFORGE_MAX_ALLOC_SIZE - BLOCK_OVERHEAD) {
         errno = ENOMEM;
         return NULL;
     }
 
-    /* Round up to 16-byte alignment */
-    size_t aligned_size = HEAPFORGE_ALIGN_UP(size);
-
-    /* Guard against exceeding signed intptr_t range required by sbrk() */
-    if (aligned_size > (size_t)INTPTR_MAX) {
-        errno = ENOMEM;
-        return NULL;
-    }
-
-    /* Ensure initial break is established and aligned */
     if (!init_allocator_if_needed()) {
         errno = ENOMEM;
         return NULL;
     }
 
-    /*
-     * Milestone 1: Bump Allocator
-     * Request memory from the OS kernel by advancing the brk pointer.
-     * In sbrk(intptr_t increment), the return value on success is the
-     * PREVIOUS program break, which marks the start of our allocated chunk.
-     */
-    void *chunk = sbrk((intptr_t)aligned_size);
+    /* Compute total block size including Header and Footer */
+    size_t payload_aligned = HEAPFORGE_ALIGN_UP(size);
+    if (payload_aligned < MIN_PAYLOAD_SIZE) {
+        payload_aligned = MIN_PAYLOAD_SIZE;
+    }
+    size_t total_size = BLOCK_OVERHEAD + payload_aligned;
+
+    /* First, check free list for a reusable block */
+    block_header_t *free_block = freelist_find_fit(total_size);
+    if (free_block != NULL) {
+        freelist_remove(free_block);
+        block_init(free_block, block_get_size(free_block), BLOCK_FLAG_ALLOCATED);
+        g_allocator.alloc_count++;
+        return block_to_payload(free_block);
+    }
+
+    /* Guard against signed intptr_t range */
+    if (total_size > (size_t)INTPTR_MAX) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    /* Extend heap via sbrk */
+    void *chunk = sbrk((intptr_t)total_size);
     if (chunk == (void *)-1) {
         errno = ENOMEM;
         return NULL;
     }
 
+    block_header_t *hdr = (block_header_t *)chunk;
+    block_init(hdr, total_size, BLOCK_FLAG_ALLOCATED);
+
     g_allocator.current_break = sbrk(0);
-    g_allocator.total_sbrk_bytes += aligned_size;
+    g_allocator.total_sbrk_bytes += total_size;
     g_allocator.alloc_count++;
 
-    return chunk;
+    return block_to_payload(hdr);
 }
 
 void heapforge_free(void *ptr) {
-    /*
-     * In Milestone 1 bump allocator, memory is monotonically grown.
-     * Full free-list tracking and reuse will be introduced in Milestone 2
-     * alongside block headers, footers, and boundary tags.
-     */
-    (void)ptr;
+    if (ptr == NULL) {
+        return;
+    }
+
+    /* Convert payload pointer back to block header */
+    block_header_t *hdr = payload_to_block(ptr);
+
+    /* Validate block integrity against heap boundaries and canaries */
+    if (!block_validate(hdr, g_allocator.initial_break, g_allocator.current_break)) {
+        fprintf(stderr, "HeapForge ERROR: Block corruption detected at %p!\n", (void *)hdr);
+        return;
+    }
+
+    /* Detect double free */
+    if (!block_is_allocated(hdr)) {
+        fprintf(stderr, "HeapForge ERROR: Double free detected on block at %p!\n", (void *)hdr);
+        return;
+    }
+
+    /* Mark block as free and insert into free list */
+    size_t current_size = block_get_size(hdr);
+    block_init(hdr, current_size, BLOCK_FLAG_FREE);
+    freelist_insert(hdr);
+
+    g_allocator.free_count++;
 }
 
 void *heapforge_calloc(size_t nmemb, size_t size) {
-    /* Check for multiplication overflow: nmemb * size */
     if (nmemb != 0 && size > SIZE_MAX / nmemb) {
         errno = ENOMEM;
         return NULL;
@@ -133,30 +162,35 @@ void *heapforge_calloc(size_t nmemb, size_t size) {
 }
 
 void *heapforge_realloc(void *ptr, size_t size) {
-    /* Case A: ptr == NULL behaves identically to malloc(size) */
     if (ptr == NULL) {
         return heapforge_malloc(size);
     }
 
-    /* Case B: size == 0 frees ptr and returns NULL */
     if (size == 0) {
         heapforge_free(ptr);
         return NULL;
     }
 
-    /*
-     * Milestone 1 note: Without block headers (Milestone 2), old block size
-     * cannot be inspected. Allocate new memory block.
-     */
+    block_header_t *hdr = payload_to_block(ptr);
+    if (!block_validate(hdr, g_allocator.initial_break, g_allocator.current_break)) {
+        fprintf(stderr, "HeapForge ERROR: realloc() on corrupted block %p!\n", ptr);
+        return NULL;
+    }
+
+    size_t old_payload_size = block_get_payload_size(hdr);
+    if (size <= old_payload_size) {
+        /* Already fits in current block (splitting will be handled in Milestone 4) */
+        return ptr;
+    }
+
+    /* Allocate new larger block */
     void *new_ptr = heapforge_malloc(size);
     if (new_ptr == NULL) {
         return NULL;
     }
 
-    /*
-     * In Milestone 2+, memcpy will copy min(old_size, size) based on block header.
-     * For Milestone 1 bump allocator, return the newly allocated block.
-     */
+    memcpy(new_ptr, ptr, old_payload_size);
+    heapforge_free(ptr);
     return new_ptr;
 }
 
@@ -171,7 +205,6 @@ void heapforge_get_state(heapforge_state_t *state) {
 }
 
 void heapforge_reset(void) {
-    /* If initialized, attempt to roll back the break pointer for testing */
     if (g_allocator.initialized && g_allocator.initial_break != NULL) {
         void *cur = sbrk(0);
         if (cur != (void *)-1 && cur > g_allocator.initial_break) {
@@ -179,9 +212,11 @@ void heapforge_reset(void) {
             sbrk(-diff);
         }
     }
+    freelist_init();
     g_allocator.initialized = false;
     g_allocator.initial_break = NULL;
     g_allocator.current_break = NULL;
     g_allocator.total_sbrk_bytes = 0;
     g_allocator.alloc_count = 0;
+    g_allocator.free_count = 0;
 }
