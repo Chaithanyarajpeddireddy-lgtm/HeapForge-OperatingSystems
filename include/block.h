@@ -144,6 +144,15 @@ static inline block_header_t *block_get_prev_physical(block_header_t *hdr, const
 void block_init(block_header_t *hdr, size_t total_size, size_t flags);
 
 /**
+ * @brief Splits a block if the remainder is at least MIN_BLOCK_SIZE.
+ *
+ * @param hdr Block header to split.
+ * @param needed_total_size Size required for the first allocated portion.
+ * @return Pointer to the remainder block header if split occurred, or NULL if block was not split.
+ */
+block_header_t *block_split(block_header_t *hdr, size_t needed_total_size);
+
+/**
  * @brief Validates header, footer, alignment, and canaries of a block.
  *
  * @return true if block metadata is completely valid, false on corruption.

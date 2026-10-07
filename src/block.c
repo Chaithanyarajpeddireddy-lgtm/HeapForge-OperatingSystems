@@ -19,6 +19,35 @@ void block_init(block_header_t *hdr, size_t total_size, size_t flags) {
     ftr->magic = BLOCK_MAGIC_FOOTER;
 }
 
+block_header_t *block_split(block_header_t *hdr, size_t needed_total_size) {
+    if (hdr == NULL || needed_total_size < MIN_BLOCK_SIZE) {
+        return NULL;
+    }
+
+    size_t current_size = block_get_size(hdr);
+    needed_total_size = HEAPFORGE_ALIGN_UP(needed_total_size);
+
+    if (current_size < needed_total_size) {
+        return NULL;
+    }
+
+    size_t remainder_size = current_size - needed_total_size;
+
+    /* Only split if the remainder can hold a valid block (MIN_BLOCK_SIZE = 48) */
+    if (remainder_size < MIN_BLOCK_SIZE) {
+        return NULL;
+    }
+
+    /* Initialize the allocated portion */
+    block_init(hdr, needed_total_size, BLOCK_FLAG_ALLOCATED);
+
+    /* Initialize the remainder portion as free */
+    block_header_t *rem = (block_header_t *)((char *)hdr + needed_total_size);
+    block_init(rem, remainder_size, BLOCK_FLAG_FREE);
+
+    return rem;
+}
+
 bool block_validate(const block_header_t *hdr, const void *heap_start, const void *heap_end) {
     if (hdr == NULL) {
         return false;

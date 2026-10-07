@@ -89,7 +89,12 @@ void *heapforge_malloc(size_t size) {
     block_header_t *free_block = freelist_find_fit(total_size);
     if (free_block != NULL) {
         freelist_remove(free_block);
-        block_init(free_block, block_get_size(free_block), BLOCK_FLAG_ALLOCATED);
+        block_header_t *remainder = block_split(free_block, total_size);
+        if (remainder != NULL) {
+            freelist_insert(remainder);
+        } else {
+            block_init(free_block, block_get_size(free_block), BLOCK_FLAG_ALLOCATED);
+        }
         g_allocator.alloc_count++;
         return block_to_payload(free_block);
     }
