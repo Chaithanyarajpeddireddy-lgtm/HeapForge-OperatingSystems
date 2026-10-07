@@ -45,7 +45,7 @@ HeapForge is a production-inspired, educational 64-bit Linux userspace memory al
 - [x] **Milestone 3 (Week 3):** Segregated free lists (13 power-of-two classes) and `heap_check()` consistency verification engine with `heap_dump()`.
 - [x] **Milestone 4 (Week 4):** Block splitting (`MIN_BLOCK_SIZE = 48` remainder rule) and segregated free block reuse.
 - [x] **Milestone 5 (Week 5):** `calloc()` zeroing with overflow detection, and `realloc()` in-place expansion/shrinking logic (Cases A, B, C, D, E).
-- [ ] **Milestone 6 (Week 6):** Allocator statistics engine, external fragmentation metrics, diagnostic snapshots.
+- [x] **Milestone 6 (Week 6):** Allocator statistics engine, external fragmentation metrics, diagnostic snapshots, and leak reporting.
 - [ ] **Milestone 7 (Week 7):** Immediate O(1) coalescing of adjacent blocks.
 - [ ] **Milestone 8 (Week 8):** Large allocation handling via `mmap()` and `munmap()`.
 - [ ] **Milestone 9 (Week 9):** Allocation trace and replay system (`HEAPFORGE_TRACE`), Python visualizer.

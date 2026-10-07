@@ -9,6 +9,7 @@
 #include "allocator.h"
 #include "block.h"
 #include "freelist.h"
+#include "stats.h"
 
 #include <unistd.h>
 #include <string.h>
@@ -60,6 +61,7 @@ static bool init_allocator_if_needed(void) {
     g_allocator.initialized = true;
 
     freelist_init();
+    stats_init();
     return true;
 }
 
@@ -92,8 +94,10 @@ void *heapforge_malloc(size_t size) {
         block_header_t *remainder = block_split(free_block, total_size);
         if (remainder != NULL) {
             freelist_insert(remainder);
+            stats_on_alloc(size, total_size, true);
         } else {
             block_init(free_block, block_get_size(free_block), BLOCK_FLAG_ALLOCATED);
+            stats_on_alloc(size, block_get_size(free_block), false);
         }
         g_allocator.alloc_count++;
         return block_to_payload(free_block);
@@ -119,6 +123,9 @@ void *heapforge_malloc(size_t size) {
     g_allocator.total_sbrk_bytes += total_size;
     g_allocator.alloc_count++;
 
+    stats_on_os_growth(total_size);
+    stats_on_alloc(size, total_size, false);
+
     return block_to_payload(hdr);
 }
 
@@ -141,6 +148,9 @@ void heapforge_free(void *ptr) {
         fprintf(stderr, "HeapForge ERROR: Double free detected on block at %p!\n", (void *)hdr);
         return;
     }
+
+    size_t payload_sz = block_get_payload_size(hdr);
+    stats_on_free(payload_sz);
 
     /* Mark block as free and insert into free list */
     size_t current_size = block_get_size(hdr);
@@ -268,6 +278,7 @@ void heapforge_reset(void) {
         }
     }
     freelist_init();
+    stats_init();
     g_allocator.initialized = false;
     g_allocator.initial_break = NULL;
     g_allocator.current_break = NULL;

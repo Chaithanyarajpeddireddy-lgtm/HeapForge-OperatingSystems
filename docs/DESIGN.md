@@ -131,3 +131,22 @@ This document records architectural and implementation design decisions made thr
   Drastically accelerates common growing patterns (e.g. dynamic array / vector resizing).
 - **Trade-offs:**
   Slightly more conditional logic in `realloc()`.
+
+---
+
+## Decision 8: External Fragmentation Formula and Tracking Architecture
+
+- **Problem:**
+  Evaluating an allocator requires objectively quantifying how effectively it prevents memory fragmentation. Without a mathematical definition, claims about fragmentation are untestable.
+- **Decision:**
+  HeapForge defines external fragmentation using the classical formula:
+  $$\text{External Fragmentation} = 1.0 - \left( \frac{\text{Largest Available Free Block}}{\text{Total Free Bytes}} \right)$$
+  when $\text{Total Free Bytes} > 0$ (otherwise $0.0$).
+- **Why this decision:**
+  1. If all free memory is coalesced into one single large block, $\text{Largest} = \text{Total}$, yielding $0.0$ ($0\%$ fragmentation).
+  2. If free memory is shattered across many small disjoint fragments, $\text{Largest} \ll \text{Total}$, yielding a value approaching $1.0$ ($100\%$ fragmentation).
+  3. Bounded strictly in $[0.0, 1.0]$, intuitive to interpret and visualize.
+- **Alternatives considered:**
+  - *Ratio of free bytes to total heap:* Measures unallocated capacity, not fragmentation. A heap can be 90% free and 0% fragmented if that free memory is a single large contiguous block.
+- **Trade-offs:**
+  Requires a fast pass over free list heads to extract the maximum block size during statistics queries.
