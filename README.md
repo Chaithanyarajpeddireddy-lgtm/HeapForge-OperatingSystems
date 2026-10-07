@@ -41,11 +41,11 @@ HeapForge is a production-inspired, educational 64-bit Linux userspace memory al
 ## Milestone Roadmap
 
 - [x] **Milestone 1 (Week 1):** Linux toolchain validation, repository skeleton, 16-byte alignment primitives, minimal `sbrk()` bump allocator, overflow protection, test suite.
-- [ ] **Milestone 2 (Week 2):** Block headers and footers, boundary tags, minimum block size enforcement, free-list foundation.
-- [ ] **Milestone 3 (Week 3):** Segregated free lists, size classes (`size_to_class`), and `heap_check()` consistency engine.
-- [ ] **Milestone 4 (Week 4):** Block splitting (`MIN_BLOCK_SIZE` remainder rule) and stress testing.
-- [ ] **Milestone 5 (Week 5):** `calloc()` zeroing and `realloc()` in-place expansion/shrinking logic.
-- [ ] **Milestone 6 (Week 6):** Allocator statistics engine, external fragmentation metrics, heap dump.
+- [x] **Milestone 2 (Week 2):** Block headers and footers, boundary tags, 64-bit canaries, minimum block size enforcement, free-list foundation.
+- [x] **Milestone 3 (Week 3):** Segregated free lists (13 power-of-two classes) and `heap_check()` consistency verification engine with `heap_dump()`.
+- [x] **Milestone 4 (Week 4):** Block splitting (`MIN_BLOCK_SIZE = 48` remainder rule) and segregated free block reuse.
+- [x] **Milestone 5 (Week 5):** `calloc()` zeroing with overflow detection, and `realloc()` in-place expansion/shrinking logic (Cases A, B, C, D, E).
+- [ ] **Milestone 6 (Week 6):** Allocator statistics engine, external fragmentation metrics, diagnostic snapshots.
 - [ ] **Milestone 7 (Week 7):** Immediate O(1) coalescing of adjacent blocks.
 - [ ] **Milestone 8 (Week 8):** Large allocation handling via `mmap()` and `munmap()`.
 - [ ] **Milestone 9 (Week 9):** Allocation trace and replay system (`HEAPFORGE_TRACE`), Python visualizer.

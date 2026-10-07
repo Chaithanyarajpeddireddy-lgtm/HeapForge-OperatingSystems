@@ -151,7 +151,12 @@ void heapforge_free(void *ptr) {
 }
 
 void *heapforge_calloc(size_t nmemb, size_t size) {
-    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+    if (nmemb == 0 || size == 0) {
+        return NULL;
+    }
+
+    /* Check for multiplication overflow */
+    if (size > SIZE_MAX / nmemb) {
         errno = ENOMEM;
         return NULL;
     }
@@ -167,10 +172,12 @@ void *heapforge_calloc(size_t nmemb, size_t size) {
 }
 
 void *heapforge_realloc(void *ptr, size_t size) {
+    /* Case A: ptr == NULL behaves identically to malloc(size) */
     if (ptr == NULL) {
         return heapforge_malloc(size);
     }
 
+    /* Case B: size == 0 frees ptr and returns NULL */
     if (size == 0) {
         heapforge_free(ptr);
         return NULL;
@@ -183,19 +190,62 @@ void *heapforge_realloc(void *ptr, size_t size) {
     }
 
     size_t old_payload_size = block_get_payload_size(hdr);
-    if (size <= old_payload_size) {
-        /* Already fits in current block (splitting will be handled in Milestone 4) */
+    size_t current_size = block_get_size(hdr);
+
+    size_t new_payload_aligned = HEAPFORGE_ALIGN_UP(size);
+    if (new_payload_aligned < MIN_PAYLOAD_SIZE) {
+        new_payload_aligned = MIN_PAYLOAD_SIZE;
+    }
+    size_t needed_total_size = BLOCK_OVERHEAD + new_payload_aligned;
+
+    /* Case C: Shrinking or identical size */
+    if (needed_total_size <= current_size) {
+        size_t excess = current_size - needed_total_size;
+        if (excess >= MIN_BLOCK_SIZE) {
+            /* Split block and free remainder */
+            block_init(hdr, needed_total_size, BLOCK_FLAG_ALLOCATED);
+            block_header_t *rem = (block_header_t *)((char *)hdr + needed_total_size);
+            block_init(rem, excess, BLOCK_FLAG_FREE);
+            freelist_insert(rem);
+        }
         return ptr;
     }
 
-    /* Allocate new larger block */
+    /* Case D: Growing in place using adjacent free space */
+    block_header_t *next_hdr = block_get_next_physical(hdr, g_allocator.current_break);
+    if (next_hdr != NULL && !block_is_allocated(next_hdr)) {
+        size_t next_size = block_get_size(next_hdr);
+        size_t combined_size = current_size + next_size;
+
+        if (combined_size >= needed_total_size) {
+            /* Remove adjacent block from free list */
+            freelist_remove(next_hdr);
+
+            size_t leftover = combined_size - needed_total_size;
+            if (leftover >= MIN_BLOCK_SIZE) {
+                /* Set new size and place remaining excess into free list */
+                block_init(hdr, needed_total_size, BLOCK_FLAG_ALLOCATED);
+                block_header_t *rem = (block_header_t *)((char *)hdr + needed_total_size);
+                block_init(rem, leftover, BLOCK_FLAG_FREE);
+                freelist_insert(rem);
+            } else {
+                /* Absorb the entire adjacent block */
+                block_init(hdr, combined_size, BLOCK_FLAG_ALLOCATED);
+            }
+            return ptr;
+        }
+    }
+
+    /* Case E: Cannot grow in place -> allocate, copy, free */
     void *new_ptr = heapforge_malloc(size);
     if (new_ptr == NULL) {
         return NULL;
     }
 
-    memcpy(new_ptr, ptr, old_payload_size);
+    size_t copy_bytes = (old_payload_size < size) ? old_payload_size : size;
+    memcpy(new_ptr, ptr, copy_bytes);
     heapforge_free(ptr);
+
     return new_ptr;
 }
 

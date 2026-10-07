@@ -35,7 +35,7 @@ This document records architectural and implementation design decisions made thr
 - **Alternatives considered:**
   - *Return unique non-null pointer:* Requires creating a minimum dummy block or shared sentinel, adding complexity and potential memory leaks if callers forget to free.
 - **Trade-offs:**
-  Callers cannot use pointer equality of non-null addresses to distinguish two distinct 0-byte allocations (which standard POSIX allows).
+  Callers cannot use pointer equality of non-null addresses to distinguish two distinct 0-byte allocations.
 
 ---
 
@@ -61,15 +61,73 @@ This document records architectural and implementation design decisions made thr
 
 ---
 
-## Decision 4: Milestone 1 Bump Allocator Baseline
+## Decision 4: Symmetrical 16-Byte Boundary Tags with 64-Bit Canaries
 
 - **Problem:**
-  Building all features (free lists, coalescing, splitting, mmap, threads) in one shot leads to debugging nightmares and violated engineering rules.
+  Coalescing physically adjacent free blocks requires inspecting the preceding block in $O(1)$ time. In addition, corruptions like buffer overflows and double frees must be detected immediately before corrupting allocator pointers.
 - **Decision:**
-  Milestone 1 implements an unadulterated monotonic bump allocator directly backed by `sbrk()`.
+  Both `block_header_t` and `block_footer_t` are sized at exactly 16 bytes:
+  - Header: `size_and_flags` (8 bytes) + `magic` (0xDEADBEEFCAFEFEED) (8 bytes).
+  - Footer: `size_and_flags` (8 bytes) + `magic` (0xFEEDCAFEBEEFDEAD) (8 bytes).
 - **Why this decision:**
-  Establishes the minimal viable interaction between userspace memory requests and the Linux kernel program break. It provides a clean, passing foundation against which alignment and basic allocation can be rigorously benchmarked before introducing headers in Milestone 2.
+  1. Because `sizeof(block_header_t) == 16`, any payload starting immediately after the header begins at an address that is guaranteed 16-byte aligned.
+  2. The matching footer allows $O(1)$ traversal to the preceding block header: `prev_hdr = (char *)curr_hdr - prev_ftr->size`.
+  3. Canaries immediately expose buffer overruns during `free()` and `heap_check()`.
 - **Alternatives considered:**
-  - *Skip directly to linked free list:* Violates rule 1: "DO NOT generate a giant implementation immediately. Build the system incrementally and verify each milestone before moving to the next one."
+  - *8-byte header without canaries:* Payload start would be misaligned by 8 bytes unless padded, increasing code complexity.
+  - *Footer only on free blocks:* Common in glibc, but requires checking whether previous block is allocated via a flag in the current header. Symmetrical footers provide simpler verification for course viva explanation.
 - **Trade-offs:**
-  Freed memory is not yet reused in Milestone 1 (addressed in Milestone 2).
+  32 bytes of total metadata overhead per block.
+
+---
+
+## Decision 5: Segregated Free Lists (13 Power-of-Two Classes)
+
+- **Problem:**
+  A single global free list requires an $O(N)$ linear search for each allocation, resulting in catastrophic slowdowns as heap usage scales.
+- **Decision:**
+  Implement 13 segregated free list classes partitioned approximately by powers of two:
+  - Class 0: 48–64
+  - Class 1: 65–128
+  - Class 2: 129–256
+  - ...
+  - Class 11: 65537–131072 (128 KiB mmap threshold)
+  - Class 12: > 131072
+- **Why this decision:**
+  Finding a suitable block is $O(1)$ on average. Allocations search their exact size class first, and fall back directly to larger classes where any block is guaranteed to satisfy the request.
+- **Alternatives considered:**
+  - *Implicit free list:* Linear search through allocated and free blocks. Extremely slow.
+  - *Binary Buddy allocator:* Fast, but suffers severe internal fragmentation (up to 50%).
+- **Trade-offs:**
+  Array of 13 list head pointers and bookkeeping counters.
+
+---
+
+## Decision 6: Block Splitting and `MIN_BLOCK_SIZE = 48`
+
+- **Problem:**
+  When a request is smaller than the available free block, assigning the entire block wastes memory (internal fragmentation). However, creating an arbitrarily small remainder would fail to hold block metadata.
+- **Decision:**
+  Define `MIN_BLOCK_SIZE = 48` bytes (16-byte header + 16-byte free node pointers + 16-byte footer). Split only if `remainder >= 48`.
+- **Why this decision:**
+  Guarantees that every free block can safely house the intrusive `prev_free` and `next_free` pointers.
+- **Trade-offs:**
+  Requests leaving $< 48$ bytes cannot be split and suffer minor internal fragmentation.
+
+---
+
+## Decision 7: `realloc()` In-Place Optimization
+
+- **Problem:**
+  Naively implementing `realloc` as `malloc() + memcpy() + free()` causes heavy memory churn and copying overhead.
+- **Decision:**
+  Implement 5 distinct cases:
+  - **Case A (`ptr == NULL`):** Equivalent to `malloc(size)`.
+  - **Case B (`size == 0`):** Equivalent to `free(ptr)`.
+  - **Case C (Shrinking):** If excess $\ge 48$ bytes, split the block in place and return the remainder to the free list.
+  - **Case D (Growing in place):** If the immediately following physical block is free and `current_size + next_size >= needed_size`, merge into the adjacent free block in place without copying!
+  - **Case E (Movement):** Fall back to `malloc() + memcpy() + free()` only when in-place growth is impossible.
+- **Why this decision:**
+  Drastically accelerates common growing patterns (e.g. dynamic array / vector resizing).
+- **Trade-offs:**
+  Slightly more conditional logic in `realloc()`.
