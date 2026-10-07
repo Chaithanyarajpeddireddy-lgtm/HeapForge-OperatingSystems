@@ -1,0 +1,24 @@
+# Build directories
+build/
+bin/
+lib/
+
+# Executables
+*.exe
+*.out
+
+# Libraries
+*.a
+*.so
+*.o
+
+# Traces and outputs
+traces/*.trace
+*.csv
+*.log
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
